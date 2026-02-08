@@ -23,6 +23,9 @@ RUN python3 -m pip install --upgrade pip wheel setuptools
 RUN pip wheel --no-cache-dir --wheel-dir=/wheels \
     gymnasium[all] \
     stable-baselines3 \
+    tensorboard \
+    # 確保 SB3 與 tensorboard 相容
+    shimmy \
     numpy \
     matplotlib
 

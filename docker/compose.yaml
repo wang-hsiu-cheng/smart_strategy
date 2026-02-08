@@ -23,6 +23,8 @@ services:
       # Direct Rendering Infrastructure
       - /dev:/dev
       - ../:/home/user/rl_main
+    port:
+      - "6006:6006"
 
     deploy:
       resources:
