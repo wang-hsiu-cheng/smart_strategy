@@ -1,0 +1,76 @@
+######################################################################
+# - Base stage
+######################################################################
+ARG ROS_DISTRO=humble
+FROM ros:${ROS_DISTRO}-ros-base AS base
+
+LABEL org.opencontainers.image.authors="wang.tw.ted@gmail.com"
+LABEL shell=bash
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG USERNAME=ted
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+######################################################################
+# - User setup & Tools stage
+######################################################################
+FROM base AS tools
+
+# User setup and Install Tools
+RUN groupadd --gid $USER_GID $USERNAME \
+    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    sudo gosu vim curl unzip python3-pip \
+    # GUI
+    libqt5gui5 libqt5widgets5 libqt5core5a \
+    # DDS & Bridges
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    ros-${ROS_DISTRO}-rosbridge-server \
+    ros-${ROS_DISTRO}-foxglove-bridge \
+    # ROS2 tools
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-rqt-plot \
+    ros-${ROS_DISTRO}-rqt-tf-tree \
+    ros-${ROS_DISTRO}-nav2-msgs \
+    ros-${ROS_DISTRO}-nav2-util \
+    # Behavior Tree & Groot
+    libfuse2 fuse3 \
+    ros-${ROS_DISTRO}-behaviortree-cpp \
+    ros-${ROS_DISTRO}-generate-parameter-library \
+    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stable Baselines 3
+RUN pip3 install --no-cache-dir stable-baselines3 shimmy
+
+# System and Environment
+RUN apt-get update && apt-get dist-upgrade -y \
+    && echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc \
+    && echo "source /home/ted/rl_main/deploy/setup.bash" >> /etc/bash.bashrc \
+    && alias groot=./groot.AppImage \
+    && alias foxglove="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765" \
+    && apt-get autoremove -y && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+######################################################################
+# - Final stage
+######################################################################
+FROM tools AS final
+
+ENV TZ=Asia/Taipei
+ENV SHELL=/bin/bash
+ENV TERM=xterm-256color
+
+USER root
+WORKDIR /home/$USERNAME
+
+COPY .bashrc .bashrc.conf
+RUN cat .bashrc.conf >> .bashrc && rm .bashrc.conf
+
+RUN chown -R $USERNAME:$USER_GID /home/$USERNAME
+
+USER $USERNAME
+CMD ["/bin/bash", "-ic"]
