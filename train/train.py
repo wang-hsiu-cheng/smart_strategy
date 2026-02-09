@@ -12,7 +12,7 @@ def train():
     # 初始化 PPO 模型
     # MlpPolicy 適合處理向量觀測資料
     model = PPO.load(
-        "robot_strategy_v1_500K", 
+        "robot_strategy_v1_800K", 
         env, 
         verbose=1, 
         tensorboard_log=logdir,
@@ -27,7 +27,7 @@ def train():
     model.learn(total_timesteps=300000, reset_num_timesteps=False)
 
     # 儲存模型
-    model.save("robot_strategy_v1_800K")
+    model.save("robot_strategy_v1_1100K")
     print("模型已儲存")
 
 if __name__ == "__main__":

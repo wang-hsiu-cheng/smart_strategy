@@ -11,7 +11,7 @@ from game_env import RobotMatchEnv
 
 def main():
     # import trained model
-    model_path = "robot_strategy_v1.zip"
+    model_path = "robot_strategy_v1_800K.zip"
     if not os.path.exists(model_path):
         print(f"can't find the model named {model_path}")
         return
