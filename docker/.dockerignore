@@ -1,0 +1,8 @@
+.git
+**/__pycache__
+**/*.pyc
+**/models/
+**/logs/
+**/runs/
+**/*.zip
+**/*.tar.gz

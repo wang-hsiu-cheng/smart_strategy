@@ -1,0 +1,30 @@
+services:
+  rl_main:
+    build:
+      context: .
+      dockerfile: Dockerfile_cpu
+    image: tedwang2/rl_main:1.4.0
+    container_name: rl_dev
+    privileged: true
+    tty: true
+    stdin_open: true
+    network_mode: host
+    stop_grace_period: 1s
+    environment:
+      - DISPLAY=host.docker.internal:0.0
+      - XAUTHORITY=/root/.Xauthority
+      - ROS_DOMAIN_ID=25
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_WS=/home/ted/rl_main/deploy
+      - GROOT_APPIMAGE=/home/ted/rl_main/groot/groot.AppImage
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /d/.Xauthority:/root/.Xauthority
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      - ../:/home/ted/rl_main
+      - /dev:/dev
+    ports:
+      - "6006:6006"
+      - "8765:8765"
+    command: /bin/bash

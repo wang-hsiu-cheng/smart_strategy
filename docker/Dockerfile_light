@@ -1,0 +1,60 @@
+# ==========================================
+# 階段 1: Builder (編譯 CPU 版 Python 套件)
+# ==========================================
+FROM ros:humble-ros-base AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip python3-dev build-essential swig cmake curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 下載 CPU 版本的 Torch 與 RL 套件 (不含 CUDA 函式庫，體積大幅縮減)
+RUN pip3 wheel --no-cache-dir --wheel-dir=/wheels \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch \
+    && pip3 wheel --no-cache-dir --wheel-dir=/wheels \
+    gymnasium[box2d,classic_control] \
+    stable-baselines3 tensorboard shimmy numpy matplotlib
+
+# ==========================================
+# 階段 2: 最終整合環境 (Final Image)
+# ==========================================
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG USERNAME=ted
+ARG USER_UID=1001
+ARG USER_GID=1001
+
+# 1. 安裝基礎工具、GUI 支持、tree 與 ROS2 調試工具 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sudo gosu tree python3-pip python3-tk \
+    libgl1 libglib2.0-0 libosmesa6 libglx-mesa0 libglfw3 \
+    ros-humble-ros-base ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-rqt-plot ros-humble-rqt-graph ros-humble-rqt-tf-tree \
+    ros-humble-nav2-msgs ros-humble-nav2-util \
+    ros-humble-behaviortree-cpp ros-humble-generate-parameter-library \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 2. 建立使用者 ted 並賦予免密碼 root 權限
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
+    && echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+# 3. 安裝 Python 套件並徹底清理暫存
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip3 install --no-cache-dir /wheels/* \
+    && find /usr/local/lib/python3.10/dist-packages/ -name "__pycache__" -type d -exec rm -rf {} +
+
+# 4. 設定 ROS2 環境與別名 (Alias)
+RUN echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc \
+    && echo "source /home/ted/rl_main/deploy/setup.bash" >> /etc/bash.bashrc \
+    && echo "alias groot=/home/ted/rl_main/groot/groot.AppImage" >> /etc/bash.bashrc \
+    && echo "alias foxglove='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'" >> /etc/bash.bashrc \
+    && apt-get autoremove -y && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+USER ted
+WORKDIR /home/ted/rl_main
+CMD ["/bin/bash"]

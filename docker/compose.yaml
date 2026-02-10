@@ -1,63 +1,46 @@
-name: RL
 services:
   rl_main_train:
     build:
       context: .
-      dockerfile: Dockerfile_train
-      target: runtime
-      args:
-        USERNAME: ted
-    image: tedwang2/rl_main:1.3.0
+      target: rl_train  # 指向 Dockerfile 裡的訓練階段
+    image: tedwang2/rl_main:train
     container_name: rl_main_train
-    stdin_open: true
-    tty: true
     privileged: true
-    stop_grace_period: 1s
+    tty: true
+    stdin_open: true
     network_mode: host
-    working_dir: /home/ted/rl_main/train
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
       - DISPLAY=host.docker.internal:0.0
       - XAUTHORITY=/root/.Xauthority
     volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Mount X11 server
       - /d/.Xauthority:/root/.Xauthority
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Direct Rendering Infrastructure
-      - /dev:/dev
       - ../:/home/ted/rl_main
-    port:
-      - "6006:6006"
     deploy:
       resources:
         reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu] 
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
     command: /bin/bash
+
   rl_main_deploy:
     build:
       context: .
-      dockerfile: Dockerfile_deploy
-      target: final
-      args:
-        ROS_DISTRO: humble
-        USERNAME: ted
-    image: tedwang2/main-rl:0.0.1
+      target: rl_deploy  # 指向 Dockerfile 裡的部署階段
+    image: tedwang2/rl_main:deploy
     container_name: rl_main_deploy
-    stdin_open: true
-    tty: true
     privileged: true
-    stop_grace_period: 1s
+    tty: true
+    stdin_open: true
     network_mode: host
-    working_dir: /home/ted/rl_main/deploy
     environment:
+      - ROS_DOMAIN_ID=25
       - DISPLAY=host.docker.internal:0.0
       - XAUTHORITY=/root/.Xauthority
       - ROS_WS=/home/ted/rl_main/deploy
       - GROOT_APPIMAGE=/home/ted/rl_main/groot/groot.AppImage
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - ROS_DOMAIN_ID=25
     volumes:
       # Mount local timezone into container. ( Readonly )
       - /etc/timezone:/etc/timezone:ro
@@ -65,9 +48,8 @@ services:
       # Mount X11 server
       - /d/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Direct Rendering Infrastructure
-      - /dev:/dev
       - ../:/home/ted/rl_main
+      - /dev:/dev
     ports:
       - "8765:8765"
     command: /bin/bash
