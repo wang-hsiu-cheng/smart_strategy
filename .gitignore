@@ -1,6 +1,11 @@
+# General
 *__pycache__
 *.pdf
-
-build/
-install/
-log/
+# SB3
+*.zip
+*/logs
+*/models
+# ROS2
+*/build
+*/install
+*/log
