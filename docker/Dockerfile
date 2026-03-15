@@ -16,7 +16,7 @@ RUN pip3 wheel --no-cache-dir --wheel-dir=/wheels \
     torch --extra-index-url https://download.pytorch.org/whl/cu121 \
     && pip3 wheel --no-cache-dir --wheel-dir=/wheels \
     gymnasium[classic_control,box2d,mujoco] \
-    stable-baselines3 tensorboard shimmy numpy matplotlib
+    stable-baselines3 sb3_contrib tensorboard shimmy numpy matplotlib
 
 # ==========================================
 # 階段 2: Base Runtime (共用底層)
