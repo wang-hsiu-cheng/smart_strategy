@@ -1,7 +1,0 @@
-robot_params:
-  radius: 0.15
-  max_speed: 0.5
-  max_dir_capacity: 4.0
-  collect_time_steps: 60
-  place_time_steps: 60
-  flip_time_steps: 30
