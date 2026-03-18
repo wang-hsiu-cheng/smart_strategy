@@ -9,3 +9,6 @@
 */build
 */install
 */log
+*/*/*/resource
+*/*/*/test
+*/*/*/models
