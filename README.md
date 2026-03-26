@@ -57,3 +57,5 @@
    ```bash=
    pip install sb3-contrib
    ```
+- `pip install onnx onnxscript onnxruntime`
+- `sudo apt install python3-colcon-common-extensions`
