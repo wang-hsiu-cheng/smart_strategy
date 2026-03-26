@@ -2,28 +2,45 @@ import torch
 import numpy as np
 from sb3_contrib import MaskablePPO
 
-# 1. 載入模型
 model = MaskablePPO.load("../models/robot_strategy_y_v2_800K.zip")
-
-# 2. 定義一個與 Observation Space 相符的 Dummy Input (41 維)
-# 注意：若有 Action Mask，通常需要將 Mask 作為第二個輸入導出，或在部署端手動處理
-dummy_input = torch.randn(1, 41) 
-
-# 3. 提取 Policy 網路並設為評估模式
 policy = model.policy.to("cpu")
 policy.eval()
 
-# 4. 執行導出
-torch.onnx.export(
-    policy,
-    (dummy_input,),             # 模型輸入
-    "strategy_y_v2_800K.onnx",  # 輸出路徑
-    export_params=True,         # 包含權重
-    opset_version=12,           # 建議 12 以上
-    input_names=['input'],
-    output_names=['output'],
-    dynamic_axes={
-        'input': {0: 'batch_size'}, 
-        'output': {0: 'batch_size'}
-    } # 支援 Batch
-)
+class OnnxablePolicy(torch.nn.Module):
+    def __init__(self, policy):
+        super().__init__()
+        self.policy = policy
+
+    def forward(self, obs):
+        # 提取特徵 (Features Extractor)
+        features = self.policy.extract_features(obs) # extract features
+        # 經過 MLP 提取器得到 Actor 的隱藏層輸出
+        latent_pi, _ = self.policy.mlp_extractor(features) # get middle action inside model
+        # 得到動作的 Logits (18 維)
+        return self.policy.action_net(latent_pi) # get final 18 actions
+
+# declare dummy input
+obs_tensor = torch.randn(1, 41)
+onnx_policy = OnnxablePolicy(policy)
+
+# export
+torch.distributions.Distribution.set_default_validate_args(False) # close distribution validate
+
+try:
+    torch.onnx.export(
+        onnx_policy,
+        obs_tensor,
+        "strategy_y_v2_800K.onnx",
+        export_params=True,
+        opset_version=15,
+        do_constant_folding=True,
+        input_names=['input'],
+        output_names=['logits'],
+        dynamic_axes={
+            'input': {0: 'batch_size'},
+            'logits': {0: 'batch_size'}
+        }
+    )
+    print("export static network model")
+except Exception as e:
+    print(f"fail to export: {e}")

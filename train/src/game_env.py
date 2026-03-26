@@ -263,7 +263,7 @@ class RobotMatchEnv(gym.Env):
         """
         reward = 0
         if robot.wait_timer > 0:
-            return 0, {"status": "waiting"}, True
+            return 0, {"status": "waiting"}
         
         # ------ Stage 0: select area ------
         if robot.stage == 0:
@@ -286,7 +286,7 @@ class RobotMatchEnv(gym.Env):
             # update stage of robot
             robot.last_stage = robot.stage
             robot.stage = 1
-            return reward, {"status": "area_selected"}, True
+            return reward, {"status": "area_selected"}
 
         # ------ Stage 1: select entry point. do physical movement ------
         elif robot.stage == 1:
@@ -294,13 +294,13 @@ class RobotMatchEnv(gym.Env):
                 # update stage of robot
                 robot.last_stage = 1
                 robot.stage = 0
-                return -0.05, {"status": "re-selecting"}, True # need to give a little punishment. shouldn't change frequently.
+                return -0.05, {"status": "re-selecting"} # need to give a little punishment. shouldn't change frequently.
             robot.target_pos = np.array(self.entry_points_config[robot.selected_area][action])
             nav_reward = self._update_navigation(robot)
             self._update_navigation(self.enemy_robot)
             reward += nav_reward
             robot.need_leave = 0
-            return reward, {"status": "navigating"}, False
+            return reward, {"status": "navigating"}
 
         # ------ Stage 2: execute mission ------
         elif robot.stage == 2:
@@ -317,7 +317,7 @@ class RobotMatchEnv(gym.Env):
                 else:
                     reward += 0.05 # still give small reward. if robot want to leave before doing everything in this area.
                 robot.need_leave = 0
-                return reward, {"action": "exit_area"}, True
+                return reward, {"action": "exit_area"}
             
             # --- do different mission: according to area conditions ---
             if not is_pantry: # collection area (select_area: 10-17)
@@ -363,9 +363,9 @@ class RobotMatchEnv(gym.Env):
                         robot.need_leave += 0.07 # give more punishment if robot still don't want to leave
                         reward -= min(robot.need_leave, 0.5) # punishment has upper limit
             
-            return reward, {"action_done": True}, True
+            return reward, {"action_done": True}
         
-        return 0, {}, True
+        return 0, {}
 
     def step(self, action):
         # ------ initial ------
