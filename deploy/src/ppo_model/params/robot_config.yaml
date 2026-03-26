@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    is_simulation: true
+    onnx_model_path: '../models/strategy_y_v2_800K.onnx'
+    robot_color: 'yellow'
+    radius: 0.15
+    max_dir_capacity: 4.0
+    max_robot_total_capacity: 16.0
+    collect_time: 2.0
+    place_time: 2.0
+    flip_time: 1.0
+    docking_time: 1.0
+    docking_offset: 0.5
