@@ -6,9 +6,16 @@
 */logs
 */models
 # ROS2
-*/build
-*/install
+build
+install
 */log
 */*/*/resource
 */*/*/test
 */*/*/models
+# other pkg
+behaviortree_ros2
+btcpp_ros2_interfaces
+opennav_docking_msgs
+# install file
+*.deb
+*.ddeb
