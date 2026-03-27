@@ -11,13 +11,13 @@ from sb3_contrib.common.maskable.utils import get_action_masks
 from game_env import RobotMatchEnv
 
 def main():
-    model_path = "../models/robot_strategy_y_v2_800K.zip" # import trained model
+    model_path = "../models/robot_strategy_y_v3_1.8M.zip" # import trained model
     model = MaskablePPO.load(model_path, device="cpu")
     print("model import successfully, run with CPU")
 
     # initialize, set render as human and select my color
     env = RobotMatchEnv(render_mode="human", my_color="yellow")
-    # env.load_enemy_model("../models/robot_strategy_b_v2_500K.zip") # load enemy model to conduct competition
+    env.load_enemy_model("../models/robot_strategy_b_v3_1.3M.zip") # load enemy model to conduct competition
     obs, _ = env.reset()
 
     try:
