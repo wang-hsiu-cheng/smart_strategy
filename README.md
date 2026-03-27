@@ -39,6 +39,9 @@
         `-- train.py
 ```
 
+### Demo
+![rl_main_version3_1](https://github.com/wang-hsiu-cheng/smart_strategy/blob/develop-model-v3/train/demo/rl_main_version3.gif)
+
 ### GUI 顯示除錯
 - 手動將 tkinter 的位置連結到安裝 python 工具的虛擬環境
    ```bash=
