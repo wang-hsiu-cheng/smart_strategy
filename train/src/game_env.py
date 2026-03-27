@@ -1,320 +1,503 @@
 import gymnasium as gym
 from gymnasium import spaces
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.maskable.utils import get_action_masks
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+class RobotState:
+    def __init__(self, start_pos, is_enemy=False):
+        self.pos = np.array(start_pos, dtype=np.float32)
+        self.stage = 0
+        self.last_stage = -1
+        self.selected_area = -1
+        self.last_area_id = -1
+        self.selected_entry_id = -1
+        self.wait_timer = 0
+        self.held_count = np.zeros(4, dtype=int)
+        self.target_pos = None
+        self.prev_dist = np.zeros(1) # init previous dist of nav as 0
+        self.action = 0
+        self.need_leave = 0
+        self.is_enemy = is_enemy
+
+    def reset(self, start_pos, is_enemy=False):
+        self.pos = np.array(start_pos, dtype=np.float32)
+        self.stage = 0
+        self.last_stage = -1
+        self.selected_area = -1
+        self.last_area_id = -1
+        self.selected_entry_id = -1
+        self.wait_timer = 0
+        self.held_count.fill(0)
+        self.target_pos = None
+        self.prev_dist = np.zeros(1) # init previous dist of nav as 0
+        self.action = 0
+        self.need_leave = 0
+        self.is_enemy = is_enemy
+
 class RobotMatchEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
-    def __init__(self, render_mode=None):
+    # define matadata params
+    metadata = {"my_color": ["yellow", "blue"], "render_modes": ["human", "rgb_array"], "render_fps": 30}
+    def __init__(self, render_mode=None, my_color=None):
         super().__init__()
         self.render_mode = render_mode
-        self.max_steps = 100 * self.metadata["render_fps"]  # 100秒
+        self.my_color = my_color
+        self.max_steps = 100 * self.metadata["render_fps"]
         self.current_step = 0
-
-        # setup constant parameter
-        # --- game filed ---
+        # -------- params about game field ------
+        self.YELLOW_START_POSE = np.array([0.3, 1.8])
+        self.BLUE_START_POSE = np.array([2.7, 1.8])
+        # field size
         self.field_height = 2.0
         self.field_width = 3.0
-        # ---- robot ----
-        self.max_robot_capacity = 8.0
-        self.max_speed = 0.8    # m/s
-        self.dt = 1/30          # 假設 30 FPS
-        self.robot_radius = 0.15
-        self.collect_time_steps = 30 * 5
-        self.place_time_steps = 30 * 3
-        self.flip_time_steps = 30 * 2
-
-        # ---- collect area ----
+        # params about collection area
         self.max_collect_capacity = 4.0
         self.collect_pos = np.array([
-            [0.2, 1.2], [2.8, 1.2], [1.15, 0.8], [1.85, 0.8],
-            [0.2, 0.4], [2.8, 0.4], [1.1, 0.2], [1.9, 0.2]
-        ])
+            [0.175, 1.2], [2.875, 1.2], [1.15, 0.8], [1.85, 0.8], 
+            [0.175, 0.4], [2.875, 0.4], [1.1, 0.2], [1.9, 0.2]])
         self.collect_sizes = np.array([
             [0.15, 0.2], [0.15, 0.2], [0.2, 0.15], [0.2, 0.15],
-            [0.15, 0.2], [0.15, 0.2], [0.2, 0.15], [0.2, 0.15]
-        ])
-        half_size = self.collect_sizes / 2.0
-        self.collet_rects_min = self.collect_pos - half_size
-        self.collect_rects_max = self.collect_pos + half_size
-
-        # ---- pantry ----
+            [0.15, 0.2], [0.15, 0.2], [0.2, 0.15], [0.2, 0.15]])
+        self.collet_rects_min = self.collect_pos - (self.collect_sizes / 2.0)
+        self.collect_rects_max = self.collect_pos + (self.collect_sizes / 2.0)
+        # params about pantry area
         self.max_pantry_capacity = 5.0
         self.pantry_pos = np.array([
-            [1.25, 1.45], [1.75, 1.45], [0.1, 0.8], [0.8, 0.8], [1.5, 0.8],
-            [2.2, 0.8], [2.9, 0.8], [0.7, 0.1], [1.5, 0.1], [2.3, 0.1]
-        ])
+            [1.25, 1.45], [1.75, 1.45], [0.1, 0.8], [0.8, 0.8], [1.5, 0.8], 
+            [2.2, 0.8],   [2.9, 0.8],   [0.7, 0.1], [1.5, 0.1], [2.3, 0.1]])
         self.pantry_size = 0.2
-        half_size = self.pantry_size / 2.0
-        self.pantry_rects_min = self.pantry_pos - half_size
-        self.pantry_rects_max = self.pantry_pos + half_size
-
-        # --- action and observasion space ---
-        # action: 8(collect) + 10(place) = 18 discrete target
+        self.pantry_rects_min = self.pantry_pos - (self.pantry_size / 2.0)
+        self.pantry_rects_max = self.pantry_pos + (self.pantry_size / 2.0)
+        # define entry points of each collection area and pantry
+        self.entry_points_config = {
+            # pantry
+            0: {1: (1.25, 1.15)},
+            1: {1: (1.75, 1.15)}, 
+            2: {1: (0.4, 0.8)},
+            3: {0: (0.8, 1.1), 1: (0.8, 0.5), 2: (1.1, 0.8), 3: (0.8, 0.5)},
+            4: {0: (1.5, 1.1), 1: (1.5, 0.5), 2: (1.8, 0.8), 3: (1.2, 0.8)},
+            5: {0: (2.2, 1.1), 1: (2.2, 0.5), 2: (2.5, 0.8), 3: (1.9, 0.8)},
+            6: {3: (2.6, 0.8)}, 
+            7: {0: (0.7, 0.4)}, 
+            8: {0: (1.5, 0.4)}, 
+            9: {0: (2.3, 0.4)},
+            # collect
+            10: {2: (0.45, 1.2)}, 
+            11: {3: (2.55, 1.2)}, 
+            12: {0: (1.15, 1.075), 1: (1.15, 0.525)},
+            13: {0: (1.85, 1.075), 1: (1.85, 0.525)}, 
+            14: {2: (0.45, 0.4)}, 
+            15: {3: (2.55, 0.4)},
+            16: {0: (1.1, 0.45)}, 
+            17: {0: (1.9, 0.45)}
+        }
+        # ------ params about robot ------
+        if self.my_color == "yellow":
+            self.my_robot = RobotState(self.YELLOW_START_POSE)
+            self.enemy_robot = RobotState(self.BLUE_START_POSE, is_enemy=True)
+        else: 
+            self.my_robot = RobotState(self.BLUE_START_POSE)
+            self.enemy_robot = RobotState(self.YELLOW_START_POSE, is_enemy=True)
+        self.max_dir_capacity = 4.0
+        self.max_robot_total_capacity = 16.0
+        self.max_speed = 0.5
+        self.dt = 1/30
+        self.robot_radius = 0.15
+        # time spent for every mission
+        self.collect_time_steps = 30 * 2
+        self.place_time_steps = 30 * 2
+        self.flip_time_steps = 30 * 1
+        # ------ params about enemy ------
+        self.enemy_model = None
+        # ------ params about model ------
+        # model action space
         self.action_space = spaces.Discrete(18)
-        # observasion: 34維 (Robot:2, Enemy:2, Timer:1, Collection:8, Pantry:10*2, Held:1)
+        # model observation space
+        # 41 dimention: (Robot:2, Enemy:2, WaitTimer:1, Collection:8, Pantry:10*2, Held:4, Stage:1, Area:1, LastArea:1, Time:1)
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(34,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(41,), dtype=np.float32
         )
-
         self.reset()
 
-    def _normalize_pos(self, pos):
-        """將 [0,3]x[0,2] 映射至 [-1,1]"""
-        nx = (pos[0] / self.field_width) * 2 - 1
-        ny = (pos[1] / self.field_height) * 2 - 1
-        return [nx, ny]
-
-    def _get_obs(self):
-        # 機器人位置 (2維)
-        robot_norm = self._normalize_pos(self.robot_pos)
-        # 敵人位置 (2維)
-        enemy_norm = self._normalize_pos(self.enemy_pos)
-
-        # 等待計時器 (1維)
-        max_steps = max(self.collect_time_steps, self.place_time_steps)
-        wait_val = (self.wait_timer / (max_steps * 2)) * 2 - 1
-        wait_timer_norm = np.array([wait_val], dtype=np.float32)
-
-        # 蒐集區狀態 (8維): 數量 0~4 -> -1~1
-        collect_info = [(c / self.max_collect_capacity) * 2 - 1 for c in self.collect_counts]
-
-        # 放置區狀態 (20維):
-        pantry_info = []
-        for i in range(10):
-            # 該區數量歸一化 (2維)
-            yellow_count_norm = (self.pantry_yellow_counts[i] / self.max_pantry_capacity) * 2 - 1
-            pantry_info.append(yellow_count_norm)
-            blue_count_norm = (self.pantry_blue_counts[i] / self.max_pantry_capacity) * 2 - 1
-            pantry_info.append(blue_count_norm)
-
-        # 機上物品數量 (1維): 0->-1, 8->1
-        held_val = (self.held_count / self.max_robot_capacity) * 2 - 1
-        held_info = np.array([held_val], dtype=np.float32)
-
-        # 合併為 34 維向量
-        obs = np.concatenate([
-            robot_norm, enemy_norm, wait_timer_norm, collect_info, pantry_info, held_info
-        ]).astype(np.float32)
-        return obs
+    def load_enemy_model(self, model_path):
+        self.enemy_model = MaskablePPO.load(model_path, device="cpu")
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.current_step = 0
-        self.robot_pos = np.array([0.3, 1.8])
-        self.enemy_pos = np.array([2.7, 1.8])
-        self.collect_counts = np.full(8, 4)
-        self.pantry_yellow_counts = np.zeros(10)
-        self.pantry_blue_counts = np.zeros(10)
-        self.held_count = 0
-        self.wait_timer = 0  # 初始化計時器
-        initial_target = self.collect_pos[0]
-        self.prev_dist = np.zeros(2)
-        self.prev_dist[0] = np.linalg.norm(self.robot_pos - initial_target)
+        self.current_step = 0 # init game timer
+        if self.my_color == "yellow":
+            self.my_robot.reset(self.YELLOW_START_POSE)
+            self.enemy_robot.reset(self.BLUE_START_POSE)
+        else: 
+            self.my_robot.reset(self.BLUE_START_POSE)
+            self.enemy_robot.reset(self.YELLOW_START_POSE)
+
+        self.collect_counts = np.full(8, 4) # init 8 collection area with 4 crates
+        self.pantry_yellow_counts = np.zeros(10) # init pantry to 0 crates
+        self.pantry_blue_counts = np.zeros(10) # init pantry to 0 crates
+        self.reward = 0.0
+        self.fig = None # init render figure
+        return self._get_obs(self.my_robot), {}
+    
+    def _normalize_pos(self, pos):
+        return [(pos[0] / self.field_width) * 2 - 1, (pos[1] / self.field_height) * 2 - 1]
+
+    def _get_obs(self, robot):
+        # identity swap
+        opponent = self.enemy_robot if not robot.is_enemy else self.my_robot
+        # 2. 位置歸一化 (使用各自物件的座標)
+        robot_norm = self._normalize_pos(robot.pos)
+        enemy_norm = self._normalize_pos(opponent.pos)
+        max_steps = max(self.collect_time_steps, self.place_time_steps)
+        wait_timer_norm = np.array([(robot.wait_timer / (max_steps * 2)) * 2 - 1], dtype=np.float32) # wait timer
+        collection_info = [(c / self.max_collect_capacity) * 2 - 1 for c in self.collect_counts] # 8 collection
+        pantry_info = [] # 10 blue pantries + 10 yellow pantries
+        for i in range(10):
+            pantry_info.append((self.pantry_yellow_counts[i] / self.max_pantry_capacity) * 2 - 1)
+            pantry_info.append((self.pantry_blue_counts[i] / self.max_pantry_capacity) * 2 - 1)
+        held_info = [(h / self.max_dir_capacity) * 2 - 1 for h in robot.held_count] # crate held on robot
+        time_progress = (self.current_step / self.max_steps) # game timer
+        time_progress_norm = np.array([time_progress * 2 - 1], dtype=np.float32)
+        # model stages and select area
+        stage_norm = np.array([(robot.stage / 2.0) * 2 - 1], dtype=np.float32)
+        area_norm = np.array([(robot.selected_area / 17.0) * 2 - 1 if robot.selected_area != -1 else -1.0], dtype=np.float32)
+        last_area_norm = np.array([(robot.last_area_id / 17.0) * 2 - 1], dtype=np.float32)
         
-        self.fig = None # 重置渲染
-        return self._get_obs(), {}
+        # 41 dimention: (Robot:2, Enemy:2, WaitTimer:1, Collection:8, Pantry:10*2, Held:4, Stage:1, Area:1, LastArea:1, Time:1)
+        obs = np.concatenate([
+            robot_norm, enemy_norm, wait_timer_norm, collection_info, pantry_info, 
+            held_info, stage_norm, area_norm, last_area_norm, time_progress_norm
+        ]).astype(np.float32)
+        return obs
+
+    # public function only call from outside of class
+    def action_masks(self):
+        return self._get_action_masks(self.my_robot) # retrun my robot's action mask
+    
+    def _get_action_masks(self, robot):
+        """
+        generate action masks for current stage
+        return a boolean list, len=action_space=18
+        True: valid action, False: invalid action
+        """
+        # init all action masks as false
+        mask = np.zeros(self.action_space.n, dtype=bool)
+
+        # ------ Stage 0: select area ------
+        if robot.stage == 0:
+            mask[0:18] = True # all 18 masks are valid
+        # ------ Stage 1: select entry point ------
+        elif robot.stage == 1:
+            mask[17] = True # an action that can exit current stage. back to stage 0
+            # determine how many entry point for this area 
+            if robot.selected_area in self.entry_points_config:
+                # only open id that really has entry point
+                available_entries = self.entry_points_config[robot.selected_area].keys()
+                for entry_id in available_entries:
+                    # check entry point id < action_space number
+                    if entry_id < self.action_space.n:
+                        mask[entry_id] = True
+            else:
+                # if there's something wrong. need to open 1 mask at least
+                mask[0] = True
+        # ------ Stage 2: execute mission ------
+        elif robot.stage == 2:
+            if robot.selected_area >= 10: # condition 0：collection area (10-17)
+                # action 0, 1, 2, 3: collect crate to robot from 4 direction
+                # action 4: return to stage 0
+                mask[0:5] = True
+            else: # condition 1：pantry (0-9)
+                # action 0: flip
+                # action 1, 2, 3, 4: place crate with 4 direction of robot
+                # action 5: return to stage 0
+                mask[0:6] = True
+        return mask
+
+    def _update_navigation(self, robot):
+        # ------ physical movement ------
+        reward = 0
+        if robot.target_pos is not None:
+            # iterate 18 area. check if robot overlap any area
+            for i in range(18):
+                # get the size of each area
+                if i < 10: # pantry
+                    r_min, r_max = self.pantry_rects_min[i], self.pantry_rects_max[i]
+                    has_items = (self.pantry_yellow_counts[i] + self.pantry_blue_counts[i]) > 0
+                else: # collect
+                    r_min, r_max = self.collet_rects_min[i-10], self.collect_rects_max[i-10]
+                    has_items = self.collect_counts[i-10] > 0
+                #if there's anything in the area. and robot pass through
+                if has_items and CollisionManager.check_circle_rect_collision(
+                    robot.pos, self.robot_radius, r_min, r_max):
+                    reward -= 0.02 # get punishment
+            # simple navigation
+            if robot.prev_dist == 0:
+                robot.prev_dist = np.linalg.norm(robot.pos - robot.target_pos)
+            move_dir = robot.target_pos - robot.pos
+            dist = np.linalg.norm(move_dir)
+            
+            if dist > (self.max_speed * self.dt):
+                robot.pos += (move_dir / dist) * (self.max_speed * self.dt)
+            else:
+                robot.pos = robot.target_pos.copy()
+                robot.target_pos = None
+                robot.last_stage = robot.stage
+                robot.stage = 2
+                robot.prev_dist = 0
+                reward += 0.1 # reward after arrival
+                
+            # give a litte reward when moving. according to moving distance
+            if not robot.is_enemy:
+                dist_to_goal = np.linalg.norm(robot.pos - (robot.target_pos if robot.target_pos is not None else robot.pos))
+                reward += (robot.prev_dist - dist_to_goal) * 0.5
+                robot.prev_dist = dist_to_goal
+        return reward
+    
+    def _robot_logic(self, robot, action):
+        """
+        - stage change
+        - execution in stages
+        - return reward and info of executions
+        """
+        reward = 0
+        if robot.wait_timer > 0:
+            return 0, {"status": "waiting"}, True
+        
+        # ------ Stage 0: select area ------
+        if robot.stage == 0:
+            robot.last_area_id = robot.selected_area
+            robot.selected_area = action
+            # get the position of current target area
+            if action < 10:
+                target_center = self.pantry_pos[action]
+            else:
+                target_center = self.pantry_pos[action-10]
+            dist_to_target = np.linalg.norm(robot.pos - target_center) # distance between robot and target
+            dist_cost = dist_to_target * 0.1 # declare a dist cost (if max dist=3.6. then dist cost is 0.36)
+
+            if robot.last_stage == 1 and robot.selected_area != robot.last_area_id: # need re-select. but give a little punishment
+                reward -= 0.1
+            elif robot.last_stage == 2 and robot.selected_area == robot.last_area_id: # shouldn't select area same as last one
+                reward -= 0.25
+            elif robot.last_stage == 2 and robot.selected_area != robot.last_area_id: # should select area as near as possible
+                reward += 0.5 - dist_cost
+            # update stage of robot
+            robot.last_stage = robot.stage
+            robot.stage = 1
+            return reward, {"status": "area_selected"}, True
+
+        # ------ Stage 1: select entry point. do physical movement ------
+        elif robot.stage == 1:
+            if action == 17: # decide to re-select the target area
+                # update stage of robot
+                robot.last_stage = 1
+                robot.stage = 0
+                return -0.05, {"status": "re-selecting"}, True # need to give a little punishment. shouldn't change frequently.
+            robot.target_pos = np.array(self.entry_points_config[robot.selected_area][action])
+            nav_reward = self._update_navigation(robot)
+            self._update_navigation(self.enemy_robot)
+            reward += nav_reward
+            robot.need_leave = 0
+            return reward, {"status": "navigating"}, False
+
+        # ------ Stage 2: execute mission ------
+        elif robot.stage == 2:
+            area_idx = robot.selected_area
+            is_pantry = area_idx < 10
+            exit_action = 5 if is_pantry else 4
+            
+            if action == exit_action:
+                # update stage of robot
+                robot.last_stage = robot.stage
+                robot.stage = 0
+                if robot.need_leave != 0: # encourage robot to leave. when nothing can do in current area
+                    reward += 0.2
+                else:
+                    reward += 0.05 # still give small reward. if robot want to leave before doing everything in this area.
+                robot.need_leave = 0
+                return reward, {"action": "exit_area"}, True
+            
+            # --- do different mission: according to area conditions ---
+            if not is_pantry: # collection area (select_area: 10-17)
+                robot_dir = action # 0-3
+                can_collect = self.collect_counts[area_idx-10] > 0 and robot.held_count[robot_dir] < self.max_dir_capacity
+                if can_collect:
+                    count = min(self.collect_counts[area_idx-10], self.max_dir_capacity - robot.held_count[robot_dir])
+                    robot.held_count[robot_dir] += count
+                    self.collect_counts[area_idx-10] -= count
+                    reward += 1.5 * count
+                    robot.wait_timer = self.collect_time_steps
+                else:
+                    robot.need_leave += 0.07 # give more punishment if robot still don't want to leave
+                    reward -= min(robot.need_leave, 0.5) # punishment has upper limit
+            
+            else: # pantry area (select_area: 0-9)
+                # determine what color of crate need to place to pantry
+                if self.my_color == "yellow":
+                    my_color_pantry_array = self.pantry_yellow_counts
+                    enemy_color_pantry_array = self.pantry_blue_counts
+                else:
+                    my_color_pantry_array = self.pantry_blue_counts
+                    enemy_color_pantry_array = self.pantry_yellow_counts
+                
+                if action == 0: # flip (action: 0)
+                    if enemy_color_pantry_array[area_idx] > 0:
+                        reward += 4.0 * enemy_color_pantry_array[area_idx]
+                        my_color_pantry_array[area_idx] += enemy_color_pantry_array[area_idx]
+                        enemy_color_pantry_array[area_idx] = 0
+                        robot.wait_timer = self.flip_time_steps
+                    else:
+                        reward -= 0.3
+                else: # place (action: 1-4 -> dir 0-3)
+                    dir_idx = action - 1
+                    cap_left = self.max_pantry_capacity - (my_color_pantry_array[area_idx] + enemy_color_pantry_array[area_idx])
+                    if robot.held_count[dir_idx] > 0 and cap_left > 0:
+                        count = min(robot.held_count[dir_idx], cap_left)
+                        robot.held_count[dir_idx] -= count
+                        my_color_pantry_array[area_idx] += count
+                        reward += 4.5 * count
+                        robot.wait_timer = self.place_time_steps
+                    else:
+                        robot.need_leave += 0.07 # give more punishment if robot still don't want to leave
+                        reward -= min(robot.need_leave, 0.5) # punishment has upper limit
+            
+            return reward, {"action_done": True}, True
+        
+        return 0, {}, True
 
     def step(self, action):
-        self.current_step += 1
-        terminated = False
-        truncated = False
-        reward = -0.005 # time cost
-        old_pos = self.robot_pos.copy()
-
-        if self.wait_timer > 0:
-            self.wait_timer -= 1
-            # 在等待期間，機器人不移動，直接回傳當前觀察值
-            return self._get_obs(), reward, False, False, {}
-        self.wait_timer = 0
-
-        # convert action number into position
-        if action < 8:
-            if self.held_count == self.max_robot_capacity: # 拿滿了還想去拿，扣分
-                reward -= 0.2
-            if self.collect_counts[action] == 0:
-                reward -= 0.5
-            target = self.collect_pos[action]
-        else:
-            if self.held_count == 0 and self.pantry_blue_counts[action - 8] == 0: # 檢查是否有藍色可以翻，如果連藍色都沒有，空手去放置區就是浪費時間
-                reward -= 0.5
-            target = self.pantry_pos[action - 8]
-
-        # robot move to the target in constant speed
-        move_dir = target - self.robot_pos
-        dist = np.linalg.norm(move_dir)
-        step_dist = self.max_speed * self.dt
-        if dist > step_dist:
-            self.robot_pos += (move_dir / dist) * step_dist
-        else:
-            self.robot_pos = target
+        # ------ initial ------
+        self.current_step += 1 # step timer
+        terminated = False # model condition
+        truncated = False # model condition
+        total_reward = -0.005 # time punishment
         
-        # --- 4. 獎勵計算：決策一致性與引導獎勵 ---
-        dist_to_goal = np.linalg.norm(self.robot_pos - target)
-        
-        # 確保 last_action 屬性存在
-        if not hasattr(self, 'last_action'): 
-            self.last_action = action
+        # ------ update wait timer ------
+        if self.my_robot.wait_timer > 0: self.my_robot.wait_timer -= 1
+        if self.enemy_robot.wait_timer > 0: self.enemy_robot.wait_timer -= 1
 
-        if action != self.last_action:
-            # (B) 決策一致性檢查：防止在不同放置點間抖動
-            if action >= 8 and self.last_action >= 8:
-                reward -= 0.1  # 針對 Pantry 間橫跳的重罰
-            else:
-                reward -= 0.02 # 一般切換輕微扣分
-                
-            # 換目標時重置距離基準，讓 diff = 0，避免產生錯誤的距離獎勵/懲罰
-            self.prev_dist[0] = dist_to_goal 
-            diff = 0
-        else:
-            # 目標一致時，計算靠近獎勵 (引導獎勵)
-            diff = self.prev_dist[0] - dist_to_goal
-            reward += diff * 0.5  # 鼓勵朝向目標移動
-        
-        # 更新舊距離
-        self.prev_dist[0] = dist_to_goal
-        self.last_action = action
+        # ------ update enemy decision ------
+        if self.enemy_model is not None and self.enemy_robot.wait_timer == 0: # make sure enemy model loaded
+            e_obs = self._get_obs(self.enemy_robot)
+            e_mask = self._get_action_masks(self.enemy_robot)
+            e_action, _ = self.enemy_model.predict(e_obs, action_masks=e_mask, deterministic=True) # get enemy action from enemy PPO model
+            # execute enemy action
+            _ = self._robot_logic(self.enemy_robot, int(e_action))
 
-        # --- 5. 獎勵計算：物理位移檢查 (靜態懲罰) ---
-        dist_moved = np.linalg.norm(self.robot_pos - old_pos)
-        # 判定門檻：至少要達到理論移動速度的一半
-        actual_speed_threshold = (self.max_speed * self.dt) * 0.5 
-        
-        if dist_moved < actual_speed_threshold:
-            # 根據是否持物加重處罰 (拿著東西發呆最傷)
-            idle_penalty = -0.05 if self.held_count > 0 else -0.02
-            reward += idle_penalty
-        
-        # if robot pass by the area not the target
-        for c in range(8):
-            if CollisionManager.check_circle_rect_collision(
-                self.robot_pos, self.robot_radius, self.collet_rects_min[c], self.collect_rects_max[c]
-            ) and c != action:
-                reward -= 0.06
-        for p in range(10):
-            if CollisionManager.check_circle_rect_collision(
-                self.robot_pos, self.robot_radius, self.pantry_rects_min[p], self.pantry_rects_max[p]
-            ) and p+8 != action:
-                reward -= 0.06
+        # ------ update my robot decision ------
+        # prevent invalid action that doesn't masked. (theoretically impossible)
+        current_mask = self._get_action_masks(self.my_robot)
+        action = int(action) # get action and change np.array into integer
+        if not current_mask[action]:
+            total_reward -= 1.0 # give heavy punishment when choosing invalid action
+            self.reward = total_reward
+            return self._get_obs(self.my_robot), total_reward, False, False, {"error": "Action Mask Violation"}
 
-        # if robot reach the target
-        if dist < 0.05:
-            if action < 8: # collect
-                if self.collect_counts[action] > 0 and self.held_count != 8:
-                    self.wait_timer = self.collect_time_steps
-                    collect_count = min(self.collect_counts[action], self.max_robot_capacity - self.held_count)
-                    self.collect_counts[action] -= collect_count
-                    self.held_count += collect_count
-                    reward += 1.0 * collect_count
-                    return self._get_obs(), reward, False, False, {}
-            else: # place
-                if (self.pantry_yellow_counts[action - 8] + self.pantry_blue_counts[action - 8]) < self.max_pantry_capacity and self.held_count > 0:
-                    self.wait_timer += self.place_time_steps
-                    place_count = min(self.max_pantry_capacity - (self.pantry_yellow_counts[action - 8] + self.pantry_blue_counts[action - 8]), self.held_count)
-                    self.pantry_yellow_counts[action - 8] += place_count
-                    self.held_count -= place_count
-                    reward += 4.0 * place_count
-                if self.pantry_blue_counts[action - 8] <= 0:
-                    return self._get_obs(), reward, False, False, {}
-                else:
-                    self.wait_timer = self.flip_time_steps
-                    self.pantry_yellow_counts[action - 8] += self.pantry_blue_counts[action - 8]
-                    reward += 4.0 * self.pantry_blue_counts[action - 8]
-                    self.pantry_blue_counts[action - 8] = 0
-                    return self._get_obs(), reward, False, False, {}
+        # execute my robot action
+        step_reward, info = self._robot_logic(self.my_robot, action)
+        total_reward += step_reward
 
-        # 結束條件
+        # ------ time pressure ------
+        time_ratio = self.current_step / self.max_steps
+        if time_ratio > 0.9 and np.sum(self.my_robot.held_count) > 0:
+            total_reward -= 0.01 * np.sum(self.my_robot.held_count)
+
+        # ------ end game condition ------
         truncated = self.current_step >= self.max_steps
-
-        if np.sum(self.pantry_yellow_counts) > 16:
+        if np.sum(self.pantry_yellow_counts) > 16: 
             terminated = True
-            reward += 50.0
+            total_reward += 50.0
 
-        self.action = action
-        self.reward = reward
-
-        return self._get_obs(), reward, terminated, truncated, {}
+        self.reward = total_reward # record reward to self variable
+        return self._get_obs(self.my_robot), total_reward, terminated, truncated, info
 
     def render(self):
         if self.render_mode != "human": return
         
-        # 1. 初始化階段：建立畫布與所有 Patch
+        # ------ initial ax and static variable (run one time) ------
         if self.fig is None:
             plt.ion()
-            self.fig, self.ax = plt.subplots(figsize=(7, 5))
+            self.fig, self.ax = plt.subplots(figsize=(10, 7))
             self.ax.set_xlim(-0.1, 3.1)
             self.ax.set_ylim(-0.1, 2.1)
             self.ax.set_aspect('equal')
-            self.score_text = self.ax.text(0.05, 0.95, '', transform=self.ax.transAxes, fontsize=12, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
-
-            # 儲存 patch 的清單，以便後續更新
+            
             self.collect_patches = []
             self.pantry_yellow_patches = []
             self.pantry_blue_patches = []
 
-            # 畫出 8 個蒐集區 (背景 + 填充層)
+            # draw crates in collection area and pantry
             for c in range(8):
-                # 框線背景
                 self.ax.add_patch(patches.Rectangle(self.collet_rects_min[c], self.collect_sizes[c][0], self.collect_sizes[c][1], color='gray', fill=False))
-                # 實際數量填充層 (寬度會隨數量變化)
                 rect = patches.Rectangle(self.collet_rects_min[c], 0, self.collect_sizes[c][1], color='gray', alpha=0.5)
                 self.collect_patches.append(rect)
                 self.ax.add_patch(rect)
-
-            # 畫出 10 個放置區
+                
             for p in range(10):
-                # 框線背景
                 self.ax.add_patch(patches.Rectangle(self.pantry_rects_min[p], self.pantry_size, self.pantry_size, color='forestgreen', fill=False))
-                # 黃色填充層
                 y_rect = patches.Rectangle(self.pantry_rects_min[p], 0, self.pantry_size, color='yellow', alpha=0.8)
                 self.pantry_yellow_patches.append(y_rect)
                 self.ax.add_patch(y_rect)
-                # 藍色填充層
                 b_rect = patches.Rectangle(self.pantry_rects_min[p], 0, self.pantry_size, color='blue', alpha=0.8)
                 self.pantry_blue_patches.append(b_rect)
                 self.ax.add_patch(b_rect)
 
-            # 機器人基礎底層 (圓形)
-            self.robot_patch = patches.Circle(self.robot_pos, self.robot_radius, color='lightgray', ec='black', zorder=10)
-            # 載物進度條 (扇形)
-            self.cargo_wedge = patches.Wedge(self.robot_pos, self.robot_radius, 0, 0, color='orange', zorder=11)
-            
-            self.ax.add_patch(self.robot_patch)
-            self.ax.add_patch(self.cargo_wedge)
+            # function: draw robot and crate on robot
+            def create_robot_visuals(robot, color, ec):
+                patch = patches.Circle(robot.pos, self.robot_radius, color=color, ec=ec, lw=2, zorder=10)
+                self.ax.add_patch(patch)
+                
+                wedges = []
+                angles = [(45, 135), (225, 315), (135, 225), (315, 405)] 
+                colors = ["#EEA695", "#A5DDAF", "#AFB8E3", "#E6AEEA"] # use 4 color to represent crates in 4 directions
+                for i in range(4):
+                    w = patches.Wedge(robot.pos, 0, angles[i][0], angles[i][1], 
+                                      color=colors[i], alpha=0.7, zorder=11)
+                    wedges.append(w)
+                    self.ax.add_patch(w)
+                return patch, wedges
 
-        # 2. 更新階段：僅修改現有 Patch 的數據，不建立新物件
+            # create my robot (white) and enemy robot (gray)
+            self.my_patch, self.my_wedges = create_robot_visuals(self.my_robot, 'white', 'black')
+            self.enemy_patch, self.enemy_wedges = create_robot_visuals(self.enemy_robot, '#E0E0E0', 'red')
+
+        # ------ update everything keep changing ------
+        stage_names = ["Select Area", "Select Entry", "Execute"]
         
-        self.ax.set_title(f"Action: {self.action} | Reward: {self.reward:.3f}")
-        # self.score_text.set_text(f"Total Reward: {self.total_reward:.2f}")
-        # 更新蒐集區數量顯示
+        # update title: my info and enemy info
+        my_info = f"MY - Stage: {stage_names[self.my_robot.stage]} | Act: {self.my_robot.action} | R: {self.reward:.2f}"
+        enemy_info = f"ENEMY - Stage: {stage_names[self.enemy_robot.stage]} | Act: {self.enemy_robot.action}"
+        self.ax.set_title(f"{my_info}\n{enemy_info}", fontsize=10)
+
+        # update objects on map
         for c in range(8):
             new_width = self.collect_sizes[c][0] * (self.collect_counts[c] / self.max_collect_capacity)
             self.collect_patches[c].set_width(new_width)
-
-        # 更新放置區數量顯示 (修正了你原本的索引 c 錯誤)
+            
         for p in range(10):
-            # 黃色部分
             y_w = self.pantry_size * (self.pantry_yellow_counts[p] / self.max_pantry_capacity)
             self.pantry_yellow_patches[p].set_width(y_w)
-            
-            # 藍色部分 (起點需位移，接在黃色後面)
             b_w = self.pantry_size * (self.pantry_blue_counts[p] / self.max_pantry_capacity)
             self.pantry_blue_patches[p].set_width(b_w)
-            new_xy = self.pantry_rects_min[p] + np.array([y_w, 0])
-            self.pantry_blue_patches[p].set_xy(new_xy)
+            self.pantry_blue_patches[p].set_xy(self.pantry_rects_min[p] + np.array([y_w, 0]))
 
-        # 更新機器人位置與載物狀態
-        self.robot_patch.center = self.robot_pos
-        self.cargo_wedge.set_center(self.robot_pos)
-        # 根據載物量更新扇形角度 (0~360度)
-        angle = (self.held_count / self.max_robot_capacity) * 360
-        self.cargo_wedge.set_theta2(angle)
+        # function: update robot position and crates condition on robot
+        def update_robot_visuals(robot, patch, wedges):
+            patch.center = robot.pos
+            for i in range(4):
+                wedges[i].set_center(robot.pos)
+                dynamic_radius = self.robot_radius * (robot.held_count[i] / self.max_dir_capacity)
+                wedges[i].set_radius(dynamic_radius)
 
-        # 重新整理畫布
-        self.fig.canvas.draw_idle() # 比 draw() 更節省資源
+        update_robot_visuals(self.my_robot, self.my_patch, self.my_wedges)
+        update_robot_visuals(self.enemy_robot, self.enemy_patch, self.enemy_wedges)
+
+        # update canvas
+        self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
-        plt.pause(0.00001) # 縮短暫停時間增加流暢度
+        plt.pause(0.00001)
 
 class CollisionManager():
     @staticmethod
@@ -336,27 +519,23 @@ class CollisionManager():
     
     @staticmethod
     def handle_boundary_collision(pos, velocity, width, height, radius):
-        """
-        處理場地邊界碰撞：限制位置並反轉速度 (彈回效果)
-        """
         new_pos = np.copy(pos)
         new_vel = np.copy(velocity)
         
-        # X 軸檢查
+        # check x-axis
         if new_pos[0] - radius < 0:
             new_pos[0] = radius
-            new_vel[0] *= -0.5  # 撞牆後動能損耗
+            new_vel[0] *= -0.5
         elif new_pos[0] + radius > width:
             new_pos[0] = width - radius
             new_vel[0] *= -0.5
             
-        # Y 軸檢查
+        # check y-axis
         if new_pos[1] - radius < 0:
             new_pos[1] = radius
             new_vel[1] *= -0.5
         elif new_pos[1] + radius > height:
             new_pos[1] = height - radius
             new_vel[1] *= -0.5
-            
         return new_pos, new_vel
     
