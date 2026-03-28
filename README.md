@@ -40,7 +40,11 @@
 ```
 
 ### Demo
-<video src="https://github.com/wang-hsiu-cheng/smart_strategy/blob/develop-model-v3/train/demo/rl_main_version3.mp4" autoplay loop muted playsinline style="max-width: 100%;"></video>
+
+
+
+<video src="https://github.com/user-attachments/assets/7a87a7cd-e1ba-4528-b9ed-7deddf8f92ab" autostart="true" loop="true" muted="muted" style="max-width: 50%;"></video>
+
 
 ### GUI 顯示除錯
 - 手動將 tkinter 的位置連結到安裝 python 工具的虛擬環境
