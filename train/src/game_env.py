@@ -2,49 +2,9 @@ import gymnasium as gym
 from gymnasium import spaces
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.utils import get_action_masks
+from robot_state import RobotState
+from collision_manager import CollisionManager
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-
-class RobotState:
-    def __init__(self, start_pos, is_enemy=False):
-        self.pos = np.array(start_pos, dtype=np.float32)
-        self.prev_pos = np.array(start_pos, dtype=np.float32)
-        self.color = None               # this robot's color
-        self.stage = 0
-        self.steps_in_stage = 0         # count the navigation steps
-        self.last_stage = -1
-        self.last_finished_area = -1    # area that robot really do sth last time
-        self.selected_area = -1
-        self.last_area_id = -1
-        self.entry_id = -1
-        self.wait_timer = 0
-        self.held_count = np.zeros(4, dtype=int)
-        self.target_pos = None
-        self.prev_dist = np.zeros(1)    # init previous dist of nav as 0
-        self.action = 0
-        self.is_going_home = False      # flag: true if robot is going home
-        self.made_contribution = False  # flag: did robot really do sth in an area
-        self.is_enemy = is_enemy
-
-    def reset(self, start_pos, is_enemy=False):
-        self.pos = np.array(start_pos, dtype=np.float32)
-        self.prev_pos = np.array(start_pos, dtype=np.float32)
-        self.stage = 0
-        self.steps_in_stage = 0
-        self.last_stage = -1
-        self.last_finished_area = -1
-        self.selected_area = -1
-        self.last_area_id = -1
-        self.entry_id = -1
-        self.wait_timer = 0
-        self.held_count.fill(0)
-        self.target_pos = None
-        self.prev_dist = np.zeros(1)    # init previous dist of nav as 0
-        self.action = 0
-        self.is_going_home = False
-        self.made_contribution = False  # init flag as false
-        self.is_enemy = is_enemy
 
 class RobotMatchEnv(gym.Env):
     # define matadata params
@@ -223,9 +183,14 @@ class RobotMatchEnv(gym.Env):
             if not np.any(mask): mask[0] = True                                              # open on area to prevent no one can choose
         # ------ Stage 1: select entry point ------
         elif robot.stage == 1:
+            # if robot.nav_fail:
+            #     if robot.steps_in_stage >= 15:  # can exit only when navigate over 0.5sec
+            #         mask[17] = True
+            #     else:
+            #         pass
             # --- an action that can exit current stage. back to stage 0 ---
             if robot.steps_in_stage >= 15:  # can exit only when navigate over 0.5sec
-                mask[17] = True 
+                mask[17] = True
             else:
                 mask[17] = False            # forbid exit: preventing hesitation 
             # --- determine how many entry point for this area ---
@@ -233,17 +198,24 @@ class RobotMatchEnv(gym.Env):
                 available_entry_ids = self.entry_points_config[robot.selected_area].keys() # only open id that really has entry point
                 for action_id in range(16): # use action_id to represent entry_point(action_id / 4) and robot direction(action_id % 4)
                     entry_id = action_id // 4
+                    target_dir = action_id % 4
                     # check entry point id < action_space number
                     if entry_id in available_entry_ids:
-                        mask[action_id] = True
-            else:
-                mask[0] = True              # if there's something wrong. need to open 1 mask at least
-            
+                        # --- 核心修正：預判抵達後的 mission_dir 是否有意義 ---
+                        mission_dir = int(((entry_id + 2) - target_dir + 4) % 4)
+                        if self._check_dir_validation(robot, mission_dir) is not None:
+                            mask[action_id] = True
+                        else:
+                            mask[action_id] = False # 不准選一個沒事做的面出發
+            if not np.any(mask[:16]):
+                mask[17] = True
+            # else:
+            #     mask[0] = True              # if there's something wrong. need to open 1 mask at least
         # ------ Stage 2: execute mission ------
         elif robot.stage == 2:
             area_idx = robot.selected_area
             is_pantry = area_idx < 10
-            exit_action = 8 if is_pantry else 4
+            exit_action = 4
             # --- check if current area has anything to do ---
             if not is_pantry:
                 has_work = self.collect_counts[area_idx-10] > 0
@@ -253,8 +225,21 @@ class RobotMatchEnv(gym.Env):
                 has_work = (np.sum(robot.held_count) > 0 and my_pantry[area_idx] < self.max_pantry_capacity) or (enemy_pantry[area_idx] > 0 and np.any(robot.held_count == 0))
             # --- decide if robot can exit or keep stay in current area ---
             if has_work:                       # stay
-                if is_pantry: mask[0:9] = True # 0-8
-                else: mask[0:5] = True         # 0-4
+                mission_dir = int(((robot.entry_id + 2) - robot.pos[2] + 4) % 4)
+                if robot.last_stage == 1:
+                    if self._check_dir_validation(robot, mission_dir) is not None:
+                        mask[mission_dir] = True
+                    else:
+                        # 否則，開放 0-4 讓它有機會旋轉或撤退
+                        for dir in range(4):
+                            if self._check_dir_validation(robot, dir) is not None:
+                                mask[dir] = True
+                        mask[exit_action] = True
+                else:
+                    for dir in range(4):
+                        if not self._check_dir_validation(robot, dir) == None:
+                            mask[dir] = True           # 0-4
+                    mask[exit_action] = True
             else:                              # must exit
                 mask[exit_action] = True
         return mask
@@ -286,16 +271,17 @@ class RobotMatchEnv(gym.Env):
             if dist > (self.max_speed * self.dt): # navigating
                 robot.pos[:2] += (move_dir / dist) * (self.max_speed * self.dt)
                 robot.pos[2] = robot.target_pos[2].copy()
-            else:                                # navigation finished
+            else:                                 # navigation finished
                 robot.pos = robot.target_pos.copy()
                 robot.target_pos = None
                 robot.last_stage = robot.stage
                 robot.stage = 2
-                robot.steps_in_stage = 0         # init steps counter of navigation
+                robot.mission_fail = False
+                robot.steps_in_stage = 0          # init steps counter of navigation
                 robot.prev_dist = 0
                 if robot.is_going_home:
                     self.is_game_end = True
-                reward += 0.1                    # reward after arrival
+                reward += 0.1                     # reward after arrival
             # --- give a litte reward when moving. according to moving distance ---
             if not robot.is_enemy:
                 dist_to_goal = np.linalg.norm(robot.pos[:2] - (robot.target_pos[:2] if robot.target_pos is not None else robot.pos[:2]))
@@ -303,6 +289,23 @@ class RobotMatchEnv(gym.Env):
                 robot.prev_dist = dist_to_goal
         return reward
     
+    def _check_dir_validation(self, robot, mission_dir):
+        mission_type = None
+        area_idx = robot.selected_area
+        is_pantry = area_idx < 10
+        enemy_pantry = self.pantry_blue_counts if robot.color == "yellow" else self.pantry_yellow_counts
+        my_pantry = self.pantry_blue_counts if robot.color == "blue" else self.pantry_yellow_counts
+        
+        if not is_pantry:                                       # collection area 10-17
+            if self.collect_counts[area_idx-10] > 0 and robot.held_count[mission_dir] < self.max_dir_capacity: # has sth and this dir of robot has space
+                mission_type = "collect"
+        else:                                                   # pantry 0-9
+            if robot.held_count[mission_dir] == 0 and enemy_pantry[area_idx] > 0 :
+                mission_type = "flip"
+            elif robot.held_count[mission_dir] > 0 and (self.max_pantry_capacity - (my_pantry[area_idx] + enemy_pantry[area_idx])) > 0: # place crates: action 0-3
+                mission_type = "place"
+        return mission_type
+                
     def _robot_logic(self, robot, action):
         """
         - stage change
@@ -325,6 +328,7 @@ class RobotMatchEnv(gym.Env):
                 robot.target_pos = self.YELLOW_START_POSE.copy() if robot.color == "yellow" else self.BLUE_START_POSE.copy()
                 robot.is_going_home = True
                 robot.stage = 1
+                robot.nav_fail = False
                 robot.steps_in_stage = 0
                 return 0, {"status": "heading_home"}
             if action < 10:
@@ -356,6 +360,7 @@ class RobotMatchEnv(gym.Env):
             # --- update stage of robot ---
             robot.last_stage = robot.stage
             robot.stage = 1
+            robot.nav_fail = False
             robot.steps_in_stage = 0
             return reward, {"status": f"area_selected area: {action}"}
 
@@ -371,21 +376,26 @@ class RobotMatchEnv(gym.Env):
                 robot.steps_in_stage = 0
                 return -0.05, {"status": "re-selecting"} # need to give a little punishment. shouldn't change frequently.
             # get entry point and robot direction from action_id
-            if robot.last_stage == 0:
+            if robot.last_stage == 0: # cannot change entry point and robot direction unless re-select target area
                 robot.last_stage = 1
                 robot.entry_id = action // 4
-                target_dir = action % 4
-                robot.target_pos = np.concatenate([self.entry_points_config[robot.selected_area][robot.entry_id], [float(target_dir)]])
-            nav_reward = self._update_navigation(robot)
+                robot_dir = action % 4
+                mission_dir = int(((robot.entry_id + 2) - robot_dir + 4) % 4)
+                robot.target_pos = np.concatenate([self.entry_points_config[robot.selected_area][robot.entry_id], [float(robot_dir)]])
+                mission_type = self._check_dir_validation(robot, mission_dir)
+                if mission_type == None:
+                    robot.nav_fail = True
+                    reward -= 3.0
+            nav_reward = self._update_navigation(robot) # keep navigating
             reward += nav_reward
-            return reward, {"status": f"navigating entry point: {robot.entry_id} target dir: {robot.pos[2]}"}
+            return reward, {"status": f"navigating entry point: {robot.entry_id} robot dir: {robot.pos[2]}"}
 
         # ------ Stage 2: execute mission ------
         elif robot.stage == 2:
             robot.wait_timer = 0
             area_idx = robot.selected_area
             is_pantry = area_idx < 10
-            exit_action = 8 if is_pantry else 4
+            exit_action = 4
             enemy_pantry = self.pantry_blue_counts if robot.color == "yellow" else self.pantry_yellow_counts
             my_pantry = self.pantry_blue_counts if robot.color == "blue" else self.pantry_yellow_counts
 
@@ -409,52 +419,58 @@ class RobotMatchEnv(gym.Env):
                 robot.steps_in_stage = 0
                 # --- reward and panelty of exit_action ---
                 if has_contribute and is_danger:
-                    return 0.5, {"status": "tactical_escape"}       # case 1：finish mission under danger
-                elif not has_work:
-                    return 0.3, {"status": "correct_exit"}          # case 2：finish mission
+                    return 0.8, {"status": "do & escape"}           # case 1: done mission under danger
+                elif has_contribute and has_work:
+                    return 0.2, {"status": "do & exit"}             # case 2: done mission, but didn't finish all missions
+                elif has_contribute and not has_work:
+                    return 0.5, {"status": "finish & exit"}         # case 3： finish all missions
                 else:
-                    return -1.0, {"status": "waste_exit"}           # case 3：didn't do everything can do
-            # --- mission execution logic
-            mission_dir = action                                      # 4 direction of robot: 0-3s
-            # --- check if pre-decide direction(robot.pos[2]) is same as target robot direction(robot_dir) ---
-            robot_dir = ((robot.entry_id + 2) - mission_dir + 4) % 4  # calculate proper robot direction
-            if robot.last_stage == 1 and robot_dir == robot.pos[2]:
-                reward += 0.2
+                    return -1.0, {"status": "wrong exit"}           # case 4： didn't do any mission
+            # --- determine mission direction ---                  
+            mission_dir = action
+            # 2. 計算目前物理上對準目標的面
+            aligned_face = int(((robot.entry_id + 2) - robot.pos[2] + 4) % 4)
+            # 3. 判斷是否需要旋轉
+            if mission_dir != aligned_face:
+                # 機器人選的面沒對準，需要原地旋轉
+                robot_dir = ((robot.entry_id + 2) - mission_dir + 4) % 4
+                robot.wait_timer += abs((robot_dir - robot.pos[2] + 2) % 4 - 2) * self.rotate_time_steps
+                robot.pos[2] = robot_dir
+            robot.last_stage = robot.stage    
+            # --- mission execution logic ---
+            mission_type = self._check_dir_validation(robot, mission_dir)
+            if mission_type == "collect":                            # has sth and this dir of robot has space
+                count = min(self.collect_counts[area_idx-10], self.max_dir_capacity - robot.held_count[mission_dir])
+                robot.held_count[mission_dir] += count
+                self.collect_counts[area_idx-10] -= count
+                robot.made_contribution = True                          # flag: record robot really do sth
+                robot.wait_timer += self.collect_time_steps
+                reward += (0.2 * count) if robot.mission_fail else (1.0 * count)
+                robot.mission_fail = False
+                return reward, {"collect success": f" reward:{reward},area:{area_idx},dir:{mission_dir}"}
+            elif mission_type == "flip":                            # flip crates
+                count = enemy_pantry[area_idx]
+                reward += (0.8 * count) if robot.mission_fail else (3.0 * count)
+                my_pantry[area_idx] += count
+                enemy_pantry[area_idx] = 0
+                robot.made_contribution = True
+                robot.wait_timer += self.flip_time_steps
+                robot.mission_fail = False
+                return reward, {"flip success": f" reward:{reward},area:{area_idx},dir:{mission_dir}"}
+            elif mission_type == "place":                          # place crates
+                cap_left = self.max_pantry_capacity - (my_pantry[area_idx] + enemy_pantry[area_idx])
+                count = min(robot.held_count[mission_dir], cap_left)
+                robot.held_count[mission_dir] -= count
+                my_pantry[area_idx] += count
+                robot.made_contribution = True
+                robot.wait_timer += self.place_time_steps
+                reward += (1.0 * count) if robot.mission_fail else (4.0 * count)
+                robot.mission_fail = False
+                return reward, {"place success": f" reward:{reward},area:{area_idx},dir:{mission_dir}"}
             else:
-                reward -= 6.0
-            robot.wait_timer += abs((robot_dir - robot.pos[2] + 2) % 4 - 2) * self.rotate_time_steps
-            robot.pos[2] = robot_dir                                # update robot direction according to action_id
-            if not is_pantry:                                       # collection area 10-17
-                if self.collect_counts[area_idx-10] > 0 and robot.held_count[mission_dir] < self.max_dir_capacity: # has sth and this dir of robot has space
-                    count = min(self.collect_counts[area_idx-10], self.max_dir_capacity - robot.held_count[mission_dir])
-                    robot.held_count[mission_dir] += count
-                    self.collect_counts[area_idx-10] -= count
-                    robot.made_contribution = True                  # flag: record robot really do sth
-                    robot.wait_timer += self.collect_time_steps
-                    reward += 1.5 * count
-            else:                                                   # pantry 0-9
-                if mission_dir > 3:                                 # flip crates: action 4-7
-                    mission_dir -= 4
-                    if enemy_pantry[area_idx] > 0 and robot.held_count[mission_dir] == 0:
-                        count = enemy_pantry[area_idx]
-                        reward += 4.0 * count
-                        my_pantry[area_idx] += count
-                        enemy_pantry[area_idx] = 0
-                        robot.made_contribution = True
-                        robot.wait_timer += self.flip_time_steps
-                    else:                                           # nothing to flip but flip
-                        reward -= 0.3
-                else:                                               # place crates: action 0-3
-                    cap_left = self.max_pantry_capacity - (my_pantry[area_idx] + enemy_pantry[area_idx])
-                    if robot.held_count[mission_dir] > 0 and cap_left > 0:
-                        count = min(robot.held_count[mission_dir], cap_left)
-                        robot.held_count[mission_dir] -= count
-                        my_pantry[area_idx] += count
-                        robot.made_contribution = True
-                        robot.wait_timer = self.place_time_steps
-                        reward += 4.5 * count
-            robot.last_stage = robot.stage
-            return reward, {"action_done": f" reward:{reward} area_{area_idx}_act_{mission_dir}"}
+                robot.mission_fail = True
+                reward -= 1.5
+                return reward, {"exception": f"{robot.last_stage} reward:{reward},area:{area_idx},dir:{mission_dir}"}
         return 0, {}
 
     def step(self, action):
@@ -500,14 +516,16 @@ class RobotMatchEnv(gym.Env):
             else:                                          # it's going into danger: give panelty
                 total_reward -= 0.05
         # --- defense my pantry ---
-        my_pantrys = self.pantry_blue_counts if self.my_robot.color == "blue" else self.pantry_yellow_counts
-        for pantry in my_pantrys:
-            if np.linalg.norm(self.my_robot.pos[:2] - pantry) < 0.3 and np.linalg.norm(self.enemy_robot.pos[:2], pantry) < 0.5:
-                total_reward += 0.03
+        my_pantry_counts = self.pantry_blue_counts if self.my_robot.color == "blue" else self.pantry_yellow_counts
+        for i in range(10):
+            if my_pantry_counts[i] > 0:  # 只防守有自己方塊的區域
+                p_pos = self.pantry_pos[i]
+                if np.linalg.norm(self.my_robot.pos[:2] - p_pos) < 0.3 and np.linalg.norm(self.enemy_robot.pos[:2] - p_pos) < 0.5:
+                    total_reward += 0.03
         # --- time pressure ---
         time_ratio = self.current_step / self.max_steps
         if time_ratio > 0.8 and np.sum(self.my_robot.held_count) > 0:
-            total_reward -= 0.01 * np.sum(self.my_robot.held_count)
+            total_reward -= 0.001 * np.sum(self.my_robot.held_count)
         # --- end game condition ---
         if self.current_step >= self.max_steps:
             truncated = True
@@ -516,53 +534,13 @@ class RobotMatchEnv(gym.Env):
             terminated = True
             # --- calculate left time bonus ---
             remaining_steps = self.max_steps - self.current_step
-            time_bonus = remaining_steps * 0.04            # get 0.04 points for each step
+            time_bonus = remaining_steps * 0.03            # get 0.03 points for each step
             # (basic point(10) + time bonus)* time_ratio^n
             total_reward += (5.0 + time_bonus) * np.power(time_ratio, 3)
             # $$Weight = 0.5 \times (1 + \tanh(k \times (Progress - Offset)))$$
-            if np.sum(self.pantry_yellow_counts) >= 16:
+            if np.sum(my_pantry_counts) >= 16:
                 total_reward += 20.0
-            elif np.sum(self.pantry_yellow_counts) >= 20:
+            elif np.sum(my_pantry_counts) >= 20:
                 total_reward += 50.0
         self.reward = total_reward                         # record reward to class public variable
         return self._get_obs(self.my_robot), total_reward, terminated, truncated, info
-
-class CollisionManager():
-    @staticmethod
-    def check_circle_collision(pos1, radius1, pos2, radius2):
-        # robot vs robot
-        distance = np.linalg.norm(pos1 - pos2)
-        return distance <= (radius1 + radius2)
-
-    @staticmethod
-    def get_closest_point_on_rect(circle_pos, rect_min, rect_max):
-        return np.clip(circle_pos, rect_min, rect_max)
-
-    @staticmethod
-    def check_circle_rect_collision(circle_pos, circle_radius, rect_min, rect_max):
-        # robot vs collection area, pantry, nest
-        closest_point = CollisionManager.get_closest_point_on_rect(circle_pos, rect_min, rect_max)
-        distance = np.linalg.norm(circle_pos - closest_point)
-        return distance <= circle_radius
-    
-    @staticmethod
-    def handle_boundary_collision(pos, velocity, width, height, radius):
-        new_pos = np.copy(pos)
-        new_vel = np.copy(velocity)
-        
-        # check x-axis
-        if new_pos[0] - radius < 0:
-            new_pos[0] = radius
-            new_vel[0] *= -0.5
-        elif new_pos[0] + radius > width:
-            new_pos[0] = width - radius
-            new_vel[0] *= -0.5
-            
-        # check y-axis
-        if new_pos[1] - radius < 0:
-            new_pos[1] = radius
-            new_vel[1] *= -0.5
-        elif new_pos[1] + radius > height:
-            new_pos[1] = height - radius
-            new_vel[1] *= -0.5
-        return new_pos, new_vel

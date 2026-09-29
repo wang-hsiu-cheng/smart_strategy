@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
 
 import matplotlib
 matplotlib.use('TkAgg') 
@@ -29,11 +29,11 @@ def render_worker(data_queue, config):
 
 # --- main process: run PPO model ---
 def main():
-    model_path = "../models/robot_strategy_y_v4-3_800K.zip"
-    model = MaskablePPO.load(model_path, device="cpu")
+    model_path = "../models/robot_strategy_y_test.zip"
+    model = MaskablePPO.load(model_path, device="cuda")
     
     env = RobotMatchEnv(render_mode=None, my_color="yellow") # init model env
-    # env.load_enemy_model("../models/robot_strategy_b_v4_800K.zip")
+    # env.load_enemy_model("../models/robot_strategy_y_v4-3_1.6M.zip")
     obs, _ = env.reset()
 
     # init config data of game

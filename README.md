@@ -51,9 +51,3 @@
    python -m tensorboard.main --logdir=./logs
    ```
 - 在瀏覽器開啟 localhost/6006
-
-### 還未更新的 docker 環境變化
-- 安裝 sb3-contrib
-   ```bash=
-   pip install sb3-contrib
-   ```
