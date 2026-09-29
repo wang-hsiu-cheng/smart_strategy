@@ -1,7 +1,7 @@
 # ==========================================
 # 階段 1: Builder (編譯 wheels)
 # ==========================================
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
+FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,20 +13,26 @@ RUN python3 -m pip install --upgrade pip wheel setuptools
 
 # 預先下載並編譯所有套件
 RUN pip3 wheel --no-cache-dir --wheel-dir=/wheels \
-    torch --extra-index-url https://download.pytorch.org/whl/cu121 \
-    && pip3 wheel --no-cache-dir --wheel-dir=/wheels \
+    --index-url https://download.pytorch.org/whl/cu126 \
+    --extra-index-url https://pypi.org/simple \
+    torch==2.13.0 \
     gymnasium[classic_control,box2d,mujoco] \
-    stable-baselines3 sb3_contrib tensorboard shimmy numpy matplotlib
+    stable-baselines3 \
+    sb3-contrib \
+    tensorboard \
+    shimmy \
+    numpy \
+    matplotlib
 
 # ==========================================
 # 階段 2: Base Runtime (共用底層)
 # ==========================================
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base_runtime
+FROM ubuntu:22.04 AS base_runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG USERNAME=ted
 ARG USER_UID=1001
-ARG USER_GID=1001
+ARG USER_GID=$USER_UID
 
 # 1. 第一步：先只安裝套件（確保 sudo 已存在）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,6 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libosmesa6 libglx-mesa0 libglfw3 \
     python3-tk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --upgrade pip wheel setuptools
 
 # 2. 第二步：建立使用者與設定權限 (分開執行避免語法解析混亂)
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
@@ -49,8 +57,10 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
 # 階段 3: Train Image (rl_main_train)
 # ==========================================
 FROM base_runtime AS rl_train
-USER ted
-WORKDIR /home/ted/rl_main/train
+
+ARG USERNAME=ted
+USER $USERNAME
+WORKDIR /home/$USERNAME/rl_main/train
 CMD ["/bin/bash", "-ic"]
 
 # ==========================================
@@ -58,6 +68,7 @@ CMD ["/bin/bash", "-ic"]
 # ==========================================
 FROM base_runtime AS rl_deploy
 USER root
+ARG USERNAME=ted
 
 # 安裝 ROS2 Humble (直接裝在 NVIDIA 鏡像上)
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
@@ -67,13 +78,15 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o 
     ros-humble-rqt-plot ros-humble-rqt-tf-tree \
     ros-humble-nav2-msgs ros-humble-nav2-util \
     ros-humble-behaviortree-cpp ros-humble-generate-parameter-library \
-    && echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc \
-    && echo "source /home/ted/rl_main/deploy/setup.bash" >> /etc/bash.bashrc \
-    && echo "alias groot=/home/ted/rl_main/groot/groot.AppImage" >> /etc/bash.bashrc \
-    && echo "alias foxglove='ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765'" >> /etc/bash.bashrc \
     && apt-get autoremove -y && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 
-USER ted
-WORKDIR /home/ted/rl_main/deploy
+USER $USERNAME
+WORKDIR /home/$USERNAME/tdk_slam_ws
+ARG WS_PATH=/home/$USERNAME/tdk_slam_ws
+
+COPY entrypoint.sh /entrypoint.sh
+RUN sudo chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash", "-ic"]
