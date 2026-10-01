@@ -1,55 +1,32 @@
 services:
-  rl_main_train:
+  rl_main:
     build:
       context: .
-      target: rl_train  # 指向 Dockerfile 裡的訓練階段
-    image: tedwang2/rl_main:train
-    container_name: rl_main_train
+      dockerfile: Dockerfile
+    image: tedwang2/rl_main:0.2.0
+    container_name: rl_main
     privileged: true
     tty: true
     stdin_open: true
+    stop_grace_period: 1s
     network_mode: host
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - DISPLAY=host.docker.internal:0.0
-      - XAUTHORITY=/root/.Xauthority
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Mount X11 server
-      - /d/.Xauthority:/root/.Xauthority
-      - ../:/home/ted/rl_main
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-    command: /bin/bash
-
-  rl_main_deploy:
-    build:
-      context: .
-      target: rl_deploy  # 指向 Dockerfile 裡的部署階段
-    image: tedwang2/rl_main:deploy
-    container_name: rl_main_deploy
-    privileged: true
-    tty: true
-    stdin_open: true
-    network_mode: host
+    working_dir: /home/ted/rl_main
     environment:
       - ROS_DOMAIN_ID=25
-      - DISPLAY=host.docker.internal:0.0
-      - XAUTHORITY=/root/.Xauthority
+      - DISPLAY=${DISPLAY:-:0}
       - ROS_WS=/home/ted/rl_main/deploy
       - GROOT_APPIMAGE=/home/ted/rl_main/groot/groot.AppImage
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - QT_X11_NO_MITSHM=1 # Fix for Qt applications in Docker
     volumes:
-      # Mount local timezone into container. ( Readonly )
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
-      # Mount X11 server
-      - /d/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - /usr/lib/wsl:/usr/lib/wsl:ro
       - ../:/home/ted/rl_main
-      - /dev:/dev
-    ports:
-      - "8765:8765"
+    devices:
+      - "/dev/dri:/dev/dri"
+      - "/dev/dxg:/dev/dxg"
+    group_add:
+      - "990"
     command: /bin/bash

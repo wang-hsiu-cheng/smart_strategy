@@ -2,7 +2,7 @@ services:
   rl_main:
     build:
       context: .
-      dockerfile: Dockerfile_cpu
+      dockerfile: Dockerfile_light
     image: tedwang2/rl_main:1.4.0
     container_name: rl_dev
     privileged: true
@@ -19,12 +19,12 @@ services:
       - GROOT_APPIMAGE=/home/ted/rl_main/groot/groot.AppImage
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /d/.Xauthority:/root/.Xauthority
+      # - /d/.Xauthority:/root/.Xauthority
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
       - ../:/home/ted/rl_main
       - /dev:/dev
-    ports:
-      - "6006:6006"
-      - "8765:8765"
+    # ports:
+    #   - "6006:6006"
+    #   - "8765:8765"
     command: /bin/bash

@@ -1,21 +1,24 @@
 # General
+.env
 *__pycache__
 *.pdf
 # SB3
+*.tar
+*.gz
 *.zip
-*/logs
-*/models
+*events.out.tfevents.*
+!*.dvc
+!*.json
 # ROS2
-build
-install
-*/log
-*/*/*/resource
-*/*/*/test
-*/*/*/models
+build/
+install/
+log/
+resource/
+test/
 # other pkg
-behaviortree_ros2
-btcpp_ros2_interfaces
-opennav_docking_msgs
+behaviortree_ros2/
+btcpp_ros2_interfaces/
+opennav_docking_msgs/
 # install file
 *.deb
 *.ddeb
