@@ -1,0 +1,13 @@
+{
+    "git_commit": "legacy-migration",
+    "color": "blue",
+    "version_group": "blue_v2-1",
+    "total_timesteps": 800000,
+    "reset_timesteps": false,
+    "pretrained_base": "legacy_checkpoint",
+    "enemy_model_used": "unknown",
+    "tb_log_name": null,
+    "ppo_hyperparameters": {
+        "note": "Legacy model imported before MLOps standardization"
+    }
+}

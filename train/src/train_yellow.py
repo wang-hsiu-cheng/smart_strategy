@@ -1,9 +1,11 @@
 import os
+import config
+from game_env import RobotMatchEnv
+from metadata_utils import resolve_step_lineage
+from metadata_utils import tag_latest_tb_event
+from metadata_utils import save_training_metadata
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
-from game_env import RobotMatchEnv
-import config
-
 
 def make_env(rank: int, color: str, enemy_model_path: str = None, seed: int = 0):
     """
@@ -20,23 +22,24 @@ def make_env(rank: int, color: str, enemy_model_path: str = None, seed: int = 0)
         return env
     return _init
 
-
 def train():
-    # 1. 取得 Yellow 隊伍專屬設定 (由 .env 動態載入)
     cfg = config.get_train_config("yellow")
-    
+
+    # 1. 自動推導步數血統
+    base_steps, cumulative_steps = resolve_step_lineage(
+        pretrained_path=cfg["pretrained_path"],
+        delta_timesteps=cfg["total_timesteps"]
+    )
+
     print("=" * 60)
-    print(f"[*] Starting Training for: [{cfg['color'].upper()}]")
-    print(f"[*] Parallel Envs     : {config.TRAIN_NUM_ENVS}")
-    print(f"[*] Device            : {config.TRAIN_DEVICE}")
-    print(f"[*] Total Timesteps   : {cfg['total_timesteps']}")
-    print(f"[*] Learning Rate     : {cfg['ppo_params']['learning_rate']}")
-    print(f"[*] Entropy Coef      : {cfg['ppo_params']['ent_coef']}")
-    print(f"[*] Enemy Opponent    : {cfg['enemy_model_path']}")
-    print(f"[*] Target Save Path  : {cfg['save_path']}")
+    print(f"[*] 訓練隊伍           : [{cfg['color'].upper()}]")
+    print(f"[*] 父模型起點步數     : {base_steps:,} 步")
+    print(f"[*] 當次推進步數 (Δ)   : {cfg['total_timesteps']:,} 步")
+    print(f"[*] 累計總步數 (目標)  : {cumulative_steps:,} 步")
+    print(f"[*] 權重儲存目標       : {cfg['save_path']}")
     print("=" * 60)
 
-    # 2. 建立多程序平行向量化環境
+    # 1. 建立向量化環境
     env = SubprocVecEnv([
         make_env(
             rank=i,
@@ -45,41 +48,44 @@ def train():
         ) for i in range(config.TRAIN_NUM_ENVS)
     ])
 
-    # 3. 判斷接續訓練 (Resuming) 或全新訓練 (From Scratch)
+    # 2. 載入 Checkpoint 或建立全新模型
     if cfg["pretrained_path"] and os.path.exists(cfg["pretrained_path"]):
         print(f"[+] Resuming training from checkpoint: {cfg['pretrained_path']}")
         model = MaskablePPO.load(
             cfg["pretrained_path"],
             env=env,
-            custom_objects=cfg["ppo_params"],  # 覆蓋為當前進度的超參數（LR、Entropy 等）
+            custom_objects=cfg["ppo_params"],
             device=config.TRAIN_DEVICE
         )
     else:
         if cfg["pretrained_path"]:
-            print(f"[!] Warning: Pretrained path '{cfg['pretrained_path']}' not found. Training from scratch.")
-        else:
-            print("[+] Initializing new MaskablePPO model from scratch.")
-            
-        model = MaskablePPO(
-            "MlpPolicy",
-            env,
-            **cfg["ppo_params"]
-        )
-
-    # 4. 開始訓練
+            print(f"[!] Checkpoint '{cfg['pretrained_path']}' not found. Initializing from scratch.")
+        model = MaskablePPO("MlpPolicy", env, **cfg["ppo_params"])
+    
+    # 3. 執行訓練
+    # 注意：接續訓練時 reset_num_timesteps 設為 False，TensorBoard 才會從 800K 往後畫
     model.learn(
         total_timesteps=cfg["total_timesteps"],
         tb_log_name=cfg["tb_log_name"],
         reset_num_timesteps=cfg["reset_timesteps"]
     )
 
-    # 5. 儲存最終模型權重
+    # 4. 存檔模型權重
     model.save(cfg["save_path"])
-    print(f"[+] Training complete. Model saved to: {cfg['save_path']}")
-
-    # 關閉向量化環境進程
     env.close()
 
+    # 5. 標記當次產出的 TensorBoard Event 檔名（加上 step_800k_to_1200k）
+    run_log_dir = os.path.join(config.TENSORBOARD_LOG_DIR, cfg["tb_log_name"])
+    tagged_event = tag_latest_tb_event(run_log_dir, base_steps, cumulative_steps)
+
+    # 6. 保存語意清晰的 metadata.json
+    save_training_metadata(
+        cfg=cfg,
+        save_path=cfg["save_path"],
+        base_timesteps=base_steps,
+        cumulative_timesteps=cumulative_steps,
+        tagged_event_file=tagged_event
+    )
 
 if __name__ == "__main__":
     train()
