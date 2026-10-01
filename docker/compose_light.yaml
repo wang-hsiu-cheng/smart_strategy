@@ -24,7 +24,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ../:/home/ted/rl_main
       - /dev:/dev
-    ports:
-      - "6006:6006"
-      - "8765:8765"
+    # ports:
+    #   - "6006:6006"
+    #   - "8765:8765"
     command: /bin/bash
