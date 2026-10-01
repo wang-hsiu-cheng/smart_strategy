@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'main_client'
+package_name = 'ppo_model'
 
 setup(
     name=package_name,
@@ -13,10 +13,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ted',
+    maintainer='tedwang',
     maintainer_email='wang.tw.ted@gmail.com',
     description='TODO: Package description',
-    license='Apache-2.0',
+    license='TODO: License declaration',
     extras_require={
         'test': [
             'pytest',
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'demo_node = main_client.demo_node:main'
+            'model_server = ppo_model.model_server:main',
         ],
     },
 )
