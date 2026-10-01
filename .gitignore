@@ -4,7 +4,7 @@
 *.pdf
 # SB3
 *.zip
-*.0
+*events.out.tfevents.*
 !*.dvc
 !*.json
 # ROS2
