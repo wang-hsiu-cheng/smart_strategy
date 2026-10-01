@@ -4,19 +4,19 @@
 *.pdf
 # SB3
 *.zip
-*/logs
-*/models
+*.0
+!*.dvc
+!*.json
 # ROS2
-build
-install
-*/log
-*/*/*/resource
-*/*/*/test
-*/*/*/models
+build/
+install/
+log/
+resource/
+test/
 # other pkg
-behaviortree_ros2
-btcpp_ros2_interfaces
-opennav_docking_msgs
+behaviortree_ros2/
+btcpp_ros2_interfaces/
+opennav_docking_msgs/
 # install file
 *.deb
 *.ddeb
